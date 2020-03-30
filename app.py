@@ -7,6 +7,8 @@ from flask_admin.contrib.sqla import ModelView
 from flask_login import LoginManager, UserMixin, current_user, logout_user, login_user, login_required
 from sqlalchemy import DateTime
 from datetime import datetime
+import secrets
+from PIL import Image
 import forms
 
 basedir = os.path.abspath(os.path.dirname(__file__))
@@ -27,6 +29,7 @@ class Vartotojas(db.Model, UserMixin):
     vardas = db.Column("Vardas", db.String(20), unique=True, nullable=False)
     el_pastas = db.Column("El. pašto adresas", db.String(120), unique=True, nullable=False)
     slaptazodis = db.Column("Slaptažodis", db.String(60), unique=True, nullable=False)
+    nuotrauka = db.Column(db.String(20), nullable=False, default='default.jpg')
 
 class Irasas(db.Model):
     __tablename__ = "irasas"
@@ -134,6 +137,7 @@ def update(id):
         irasas.suma = forma.suma.data
         db.session.commit()
         return redirect(url_for('records'))
+
     return render_template("update.html", form=forma, irasas=irasas)
 
 @app.route("/balansas")
@@ -155,11 +159,27 @@ def balance():
 # def account():
 #     return render_template('paskyra.html', title='Paskyra')
 
+def save_picture(form_picture):
+    random_hex = secrets.token_hex(8)
+    _, f_ext = os.path.splitext(form_picture.filename)
+    picture_fn = random_hex + f_ext
+    picture_path = os.path.join(app.root_path, 'static/profilio_nuotraukos', picture_fn)
+
+    output_size = (125, 125)
+    i = Image.open(form_picture)
+    i.thumbnail(output_size)
+    i.save(picture_path)
+
+    return picture_fn
+
 @app.route("/paskyra", methods=['GET', 'POST'])
 @login_required
 def paskyra():
     form = forms.PaskyrosAtnaujinimoForma()
     if form.validate_on_submit():
+        if form.nuotrauka.data:
+            nuotraukos_failas = save_picture(form.nuotrauka.data)
+            current_user.nuotrauka = nuotraukos_failas
         current_user.vardas = form.vardas.data
         current_user.el_pastas = form.el_pastas.data
         db.session.commit()
@@ -168,7 +188,8 @@ def paskyra():
     elif request.method == 'GET':
         form.vardas.data = current_user.vardas
         form.el_pastas.data = current_user.el_pastas
-    return render_template('paskyra.html', title='Account', form=form)
+    nuotrauka = url_for('static', filename='profilio_nuotraukos/' + current_user.nuotrauka)
+    return render_template('paskyra.html', title='Account', nuotrauka=nuotrauka, form=form)
 
 
 @app.route("/")
