@@ -2,13 +2,11 @@ import os
 from flask import Flask, render_template, redirect, url_for, flash, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_bcrypt import Bcrypt
-from flask_admin import Admin
-from flask_admin.contrib.sqla import ModelView
+
 from flask_login import LoginManager, UserMixin, current_user, logout_user, login_user, login_required
 from sqlalchemy import DateTime
 from datetime import datetime
-import secrets
-from PIL import Image
+from flask_mail import Message, Mail
 import forms
 
 basedir = os.path.abspath(os.path.dirname(__file__))
@@ -19,6 +17,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
 bcrypt = Bcrypt(app)
+mail = Mail(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'registruotis'
 login_manager.login_message_category = 'info'
@@ -29,7 +28,6 @@ class Vartotojas(db.Model, UserMixin):
     vardas = db.Column("Vardas", db.String(20), unique=True, nullable=False)
     el_pastas = db.Column("El. pašto adresas", db.String(120), unique=True, nullable=False)
     slaptazodis = db.Column("Slaptažodis", db.String(60), unique=True, nullable=False)
-    nuotrauka = db.Column(db.String(20), nullable=False, default='default.jpg')
 
 class Irasas(db.Model):
     __tablename__ = "irasas"
@@ -39,14 +37,6 @@ class Irasas(db.Model):
     suma = db.Column("Vardas", db.Integer)
     vartotojas_id = db.Column(db.Integer, db.ForeignKey("vartotojas.id"))
     vartotojas = db.relationship("Vartotojas", lazy=True)
-
-class ManoModelView(ModelView):
-    def is_accessible(self):
-        return current_user.is_authenticated and current_user.el_pastas == "donoras@gmail.com"
-
-admin = Admin(app)
-admin.add_view(ManoModelView(Vartotojas, db.session))
-admin.add_view(ModelView(Irasas, db.session))
 
 @login_manager.user_loader
 def load_user(vartotojo_id):
@@ -89,10 +79,11 @@ def atsijungti():
     logout_user()
     return redirect(url_for('index'))
 
-# @app.route("/irasai")
-# @login_required
-# def irasai():
-#     return render_template('irasai.html', title='Įrašai')
+
+@app.route("/paskyra")
+@login_required
+def account():
+    return render_template('paskyra.html', title='Paskyra')
 
 @app.route("/admin")
 @login_required
@@ -104,8 +95,11 @@ def admin():
 @login_required
 def records():
     db.create_all()
-    page = request.args.get('page', 1, type=int)
-    visi_irasai = Irasas.query.filter_by(vartotojas_id=current_user.id).order_by(Irasas.data.desc()).paginate(page=page, per_page=5)
+    try:
+        visi_irasai = Irasas.query.filter_by(vartotojas_id=current_user.id).all()
+    except:
+        visi_irasai = []
+    print(visi_irasai)
     return render_template("irasai.html", visi_irasai=visi_irasai, datetime=datetime)
 
 @app.route("/naujas_irasas", methods=["GET", "POST"])
@@ -137,7 +131,6 @@ def update(id):
         irasas.suma = forma.suma.data
         db.session.commit()
         return redirect(url_for('records'))
-
     return render_template("update.html", form=forma, irasas=irasas)
 
 @app.route("/balansas")
@@ -154,43 +147,45 @@ def balance():
             balansas -= irasas.suma
     return render_template("balansas.html", balansas=balansas)
 
-# @app.route("/paskyra")
-# @login_required
-# def account():
-#     return render_template('paskyra.html', title='Paskyra')
+def send_reset_email(user):
+    token = user.get_reset_token()
+    msg = Message('Slaptažodžio atnaujinimo užklausa',
+                  sender='noreply@demo.com',
+                  recipients=[user.el_pastas])
+    msg.body = f'''Norėdami atnaujinti slaptažodį, paspauskite nuorodą:
+    {url_for('reset_token', token=token, _external=True)}
+    Jei jūs nedarėte šios užklausos, nieko nearykite ir slaptažodis nebus pakeistas.
+    '''
+    mail.send(msg)
 
-def save_picture(form_picture):
-    random_hex = secrets.token_hex(8)
-    _, f_ext = os.path.splitext(form_picture.filename)
-    picture_fn = random_hex + f_ext
-    picture_path = os.path.join(app.root_path, 'static/profilio_nuotraukos', picture_fn)
-
-    output_size = (125, 125)
-    i = Image.open(form_picture)
-    i.thumbnail(output_size)
-    i.save(picture_path)
-
-    return picture_fn
-
-@app.route("/paskyra", methods=['GET', 'POST'])
-@login_required
-def paskyra():
-    form = forms.PaskyrosAtnaujinimoForma()
+app.route("/reset_password", methods=['GET', 'POST'])
+def reset_request():
+    if current_user.is_authenticated:
+        return redirect(url_for('home'))
+    form = forms.UzklausosAtnaujinimoForma()
     if form.validate_on_submit():
-        if form.nuotrauka.data:
-            nuotraukos_failas = save_picture(form.nuotrauka.data)
-            current_user.nuotrauka = nuotraukos_failas
-        current_user.vardas = form.vardas.data
-        current_user.el_pastas = form.el_pastas.data
-        db.session.commit()
-        flash('Tavo paskyra atnaujinta!', 'success')
-        return redirect(url_for('paskyra'))
-    elif request.method == 'GET':
-        form.vardas.data = current_user.vardas
-        form.el_pastas.data = current_user.el_pastas
-    nuotrauka = url_for('static', filename='profilio_nuotraukos/' + current_user.nuotrauka)
-    return render_template('paskyra.html', title='Account', nuotrauka=nuotrauka, form=form)
+        user = Vartotojas.query.filter_by(el_pastas=form.el_pastas.data).first()
+        send_reset_email(user)
+        flash('Jums išsiųstas el. laiškas su slaptažodžio atnaujinimo instrukcijomis.', 'info')
+        return redirect(url_for('prisijungti'))
+    return render_template('reset_request.html', title='Reset Password', form=form)
 
+@app.route("/reset_password/<token>", methods=['GET', 'POST'])
+def reset_token(token):
+    if current_user.is_authenticated:
+        return redirect(url_for('home'))
+    user = Vartotojas.verify_reset_token(token)
+    if user is None:
+        flash('That is an invalid or expired token', 'warning')
+        return redirect(url_for('reset_request'))
+    form = forms.SlaptazodzioAtnaujinimoForma()
+    if form.validate_on_submit():
+        hashed_password = bcrypt.generate_password_hash(form.password.data).decode('utf-8')
+        user.slaptazodis = hashed_password
+        db.session.commit()
+        flash('Tavo slaptažodis buvo atnaujintas! Gali prisijungti', 'success')
+        return redirect(url_for('prisijungti'))
+    return render_template('reset_token.html', title='Reset Password', form=form)
 
 @app.route("/")
 def index():
